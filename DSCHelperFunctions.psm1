@@ -180,8 +180,8 @@ The above command takes the configurationdata "$Labhosts" and updates it to incl
 .PARAMETER ConfigurationData
 The configurationdata hashtable to update.
 .PARAMETER PasswordData
-The path to the current password XML file.  If the file does not exist, the module will attempt to create a "sample" for population.
-The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\Management\passwords.xml
+The path to the current password XML file.  For guidance, Install-DSCHelperStores can create a "sample".
+The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\passwords.xml
 #>
     [CmdletBinding()]
     param(
@@ -197,15 +197,15 @@ The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\D
 
     Process {
         #Seperate Wilcard information from the rest of configuration
-                    IF ($ReturnData.AllNodes.Where({$_.NodeName -eq "*"})) {
-        $Returndata.AllNodes | ForEach-Object { IF ($_.NodeName -eq "*") {$Wildcardinjection= $_}}
-        $ReturnData.AllNodes = $ReturnData.AllNodes.Where{($_.NodeName -ne "*")}
-        }
-                        Else {
-        #Create Missing Wildcard
-        $Wildcardinjection = @{}
-        $Wildcardinjection.NodeName = "*"
-        }
+        IF ($ReturnData.AllNodes.Where({$_.NodeName -eq "*"})) {
+            $Returndata.AllNodes | ForEach-Object { IF ($_.NodeName -eq "*") {$Wildcardinjection= $_}}
+            $ReturnData.AllNodes = $ReturnData.AllNodes.Where{($_.NodeName -ne "*")}
+            }
+        Else {
+            #Create Missing Wildcard
+            $Wildcardinjection = @{}
+            $Wildcardinjection.NodeName = "*"
+            }
     
         #Merge Passwords into Wildcard
         $Wildcardinjection+=Import-PasswordXML -XMLFile $PasswordData
@@ -215,6 +215,50 @@ The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\D
     End {
         Return $ReturnData
     }
+}
+
+function Update-ConfigurationDataNames
+{
+<#
+.Synopsis
+Function that imports NodeNames and associated GUIDs from a CSVfile and then updates ConfigurationData accordingly
+.DESCRIPTION
+Function allows admins to use "friendly" names for nodes, and transltes them into GUIDs for use by DSC.  Capable of replacing found translations as well as generating new GUIDs for new entries if flag is set.
+.EXAMPLE
+$updatedlabhosts = Update-ConfigurationDataNames -ConfigurationData $LabHosts
+
+The above command takes the configurationdata "$Labhosts" and updates it to use GUID entries stored in a csv.
+.PARAMETER ConfigurationData
+The configurationdata hashtable to update.
+.PARAMETER GUIDData
+The path to the current .csv file.  Install-DSCHelperStores can be used to create a file for guidance
+The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)][ValidateNotNullOrEmpty()][HashTable]$ConfigurationData,
+        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Alias("CSVFile")][String]$GUIDData = "$env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv"
+    )
+
+    Begin {
+        #Load ConfigurationData and node information into memory
+        $ReturnData = $ConfigurationData
+        $DSCNodes = Import-Csv -path $GUIDData
+    }#End Begin Block
+
+    Process {
+        #Check each nodename for an equivelant thumbprint
+        $ReturnData.AllNodes | ForEach-Object -Process {
+            $OrigName = $_.NodeName
+            If ($DSCNodes.NodeName -contains $OrigName) {
+                $_.NodeName = ($DSCNodes | Where {$_.NodeName -eq $OrigName}).NodeGuid
+                }#End Match Found
+            }#End crawling each Node
+    }#End process block
+
+    End {
+        Return $ReturnData
+    }#End Block
 }
 
 Function Import-PasswordXML
