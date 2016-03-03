@@ -19,7 +19,8 @@ The default file is $env:PROGRAMFILES\WindowsPowershell\DscService\Management\pa
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$false)][Alias("PullServerCertStore")][String]$CertStore = "$env:PROGRAMFILES\WindowsPowershell\DscService\NodeCertificates",
-        [Parameter(Mandatory=$false)][Alias("XMLFile")][String]$PasswordData = "$env:PROGRAMFILES\WindowsPowershell\DscService\Management\passwords.xml"
+        [Parameter(Mandatory=$false)][Alias("XMLFile")][String]$PasswordData = "$env:PROGRAMFILES\WindowsPowershell\DscService\passwords.xml",
+        [Parameter(Mandatory=$false)][Alias("CSVFile")][String]$GUIDData = "$env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv"
         )
 
     Begin {
@@ -72,7 +73,7 @@ The default file is $env:PROGRAMFILES\WindowsPowershell\DscService\Management\pa
 
         #Try to create the sample xml
         Try {
-            Write-Verbose "Creating Folder $Certstore"
+            Write-Verbose "Creating file $PasswordData"
             $xmlWriter = New-Object System.XMl.XmlTextWriter($PasswordData,$Null)
             #Set Format 
             $xmlWriter.Formatting = 'Indented'
@@ -101,6 +102,40 @@ The default file is $env:PROGRAMFILES\WindowsPowershell\DscService\Management\pa
             }
         }#End Create Missing PasswordData
     Else {write-verbose "$PasswordData already exists"}
+
+    If($GUIDData -and !(Test-Path -Path ($GUIDData))) {
+        Write-Verbose "File not found, creating dummy file"
+        $FilePath = Split-Path $GUIDData
+        
+        #If missing, create the folder structure
+        If (!(Test-Path -Path $FilePath)) {
+            Try {
+                write-verbose "Creating csv parent directory"
+                New-Item ($FilePath) -type directory -force -ErrorAction STOP | Out-Null
+                }
+            Catch {
+                $E = $_.Exception.GetBaseException()
+                $E.ErrorInformation.Description
+                write-verbose "error creating directory $FilePath"
+                break
+                }
+            }#End Parent Folder Creation
+
+        #Try to create the sample csv
+        Try {
+            Write-Verbose "Creating file $GUIDData"
+            #Need to create a custom object to add to the arraylist
+            $newentry = new-object PSObject
+            $newentry | Add-Member -Type NoteProperty -Name NodeName -Value "Node1"
+            $newentry | Add-Member -Type NoteProperty -Name NodeGUID -Value "12345678-1234-1234-1234-1234567890ab"
+            $newentry | export-csv -Path $GUIDData -Force
+            }
+        Catch {
+            write-error "Error creating sample csv File"
+            break
+            }
+        }#End Create Missing GUIDData
+    Else {write-verbose "$GUIDData already exists"}
 
     }#End Process Block
 }
@@ -186,7 +221,7 @@ The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\D
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)][ValidateNotNullOrEmpty()][HashTable]$ConfigurationData,
-        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Alias("XMLFile")][String]$PasswordData = "$env:PROGRAMFILES\WindowsPowershell\DscService\Management\passwords.xml"
+        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Alias("XMLFile")][String]$PasswordData = "$env:PROGRAMFILES\WindowsPowershell\DscService\passwords.xml"
     )
 
     Begin {
@@ -233,17 +268,21 @@ The configurationdata hashtable to update.
 .PARAMETER GUIDData
 The path to the current .csv file.  Install-DSCHelperStores can be used to create a file for guidance
 The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv
+.PARAMETER Update
+Tells the function to generate a new GUID and update the CSV file if a Node is missing
 #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true,ValueFromPipelineByPropertyName=$true)][ValidateNotNullOrEmpty()][HashTable]$ConfigurationData,
-        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Alias("CSVFile")][String]$GUIDData = "$env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv"
+        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Alias("CSVFile")][String]$GUIDData = "$env:PROGRAMFILES\WindowsPowershell\DscService\DSCNodes.csv",
+        [Parameter(Mandatory=$false,ValueFromPipelineByPropertyName=$true)][Switch]$Update = $false
     )
 
     Begin {
         #Load ConfigurationData and node information into memory
         $ReturnData = $ConfigurationData
-        $DSCNodes = Import-Csv -path $GUIDData
+        [System.Collections.ArrayList]$DSCNodes = Import-Csv -path $GUIDData
+        [bool]$DSCNodesFileNeedsUpdating = $false
     }#End Begin Block
 
     Process {
@@ -251,12 +290,29 @@ The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\D
         $ReturnData.AllNodes | ForEach-Object -Process {
             $OrigName = $_.NodeName
             If ($DSCNodes.NodeName -contains $OrigName) {
-                $_.NodeName = ($DSCNodes | Where {$_.NodeName -eq $OrigName}).NodeGuid
+                $NewGuid = ($DSCNodes | Where {$_.NodeName -eq $OrigName}).NodeGuid
+                $_.NodeName = $NewGuid
+                Write-Verbose -Message "Updated $OrigName to $NewGUID"
                 }#End Match Found
+            ElseIf ($Update -and ($OrigName -ne "*")) {
+                $DSCNodesFileNeedsUpdating = $true
+                $NewGuid = [string][guid]::NewGuid()
+                $_.NodeName = $NewGuid
+                #Need to create a custom object to add to the arraylist
+                $newentry = new-object PSObject
+                $newentry | Add-Member -Type NoteProperty -Name NodeName -Value $OrigName
+                $newentry | Add-Member -Type NoteProperty -Name NodeGUID -Value $NewGUID
+                $DSCNodes.add($newentry) | Out-Null
+                Write-Verbose -Message "created missing entry for $OrigName and $NewGUID"
+                }#End update Missing Entry
             }#End crawling each Node
     }#End process block
 
     End {
+        If ($DSCNodesFileNeedsUpdating) {
+            Write-Verbose -Message "committing changes to $GUIDData"
+            $DSCNodes | export-csv -Path $GUIDData -Force
+            }
         Return $ReturnData
     }#End Block
 }
@@ -278,13 +334,13 @@ Import-PasswordXML -XMLFile "C:\passwords.xml" -ToSession
 This will create pscredential per username/password combination and store it as a varable in the current session.
 .PARAMETER XMLFile
 The path to the current password XML file.  If the file does not exist, the module will attempt to create a "sample" for population.
-The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\Management\passwords.xml
+The default file checked if not defiend is $env:PROGRAMFILES\WindowsPowershell\DscService\passwords.xml
 .PARAMETER ToSession
 Switch that toggles if the object is returned directly or stored as a variable in the current session
 #>
 [cmdletBinding()]
 param(
-    [Parameter(Mandatory=$false)][String]$XMLFile = "$env:PROGRAMFILES\WindowsPowershell\DscService\Management\passwords.xml",
+    [Parameter(Mandatory=$false)][String]$XMLFile = "$env:PROGRAMFILES\WindowsPowershell\DscService\passwords.xml",
     [Parameter(Mandatory=$false)][Switch]$ToSession
     )
 
